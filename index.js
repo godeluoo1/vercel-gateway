@@ -17,7 +17,7 @@ const uuidHex = UUID.replace(/-/g, '').toLowerCase();
 const DOMAIN = (process.env.DOMAIN || process.env.APP_DOMAIN || 'vercel.chatgptaigode.eu.org').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
 const SUB_PATH = (process.env.SUB_PATH || 'sub').trim().replace(/^\/+|\/+$/g, '');
 const WSPATH = (process.env.WSPATH || process.env.PATH_A || 'api/v3/telemetry').trim().replace(/^\/+|\/+$/g, '');
-const CDN_HOST = (process.env.CDN_HOST || 'saas.sin.fan').trim();
+const CDN_HOST = (process.env.CDN_HOST || '').trim();
 const CDN_PORT = Number(process.env.CDN_PORT || 443);
 const NAME = (process.env.NAME || 'Tokyo-HND1-Vercel').trim();
 
@@ -119,7 +119,7 @@ async function resolveHostFast(host) {
 // ==================== 4. 优选域名自适应订阅生成 ====================
 function generateSubscription() {
   const effectiveHost = DOMAIN || 'vercel.chatgptaigode.eu.org';
-  const connectAddress = CDN_HOST || 'saas.sin.fan';
+  const connectAddress = CDN_HOST || effectiveHost;
 
   const vlsURL = `${PROTO_VL}://${UUID}@${connectAddress}:${CDN_PORT}?encryption=none&security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${NAME}-Vls`;
   const troURL = `${PROTO_TR}://${UUID}@${connectAddress}:${CDN_PORT}?security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${NAME}-Trojan`;
