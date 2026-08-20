@@ -8,9 +8,9 @@ const path = require('path');
 const net = require('net');
 const crypto = require('crypto');
 const { Buffer } = require('buffer');
-const { WebSocketServer, createWebSocketStream } = require('ws');
+const { WebSocket, WebSocketServer, createWebSocketStream } = require('ws');
 
-// ==================== 1. 初始化配置与环境变量读取 ====================
+// ==================== 1. 环境变量与全局配置 ====================
 const PORT = Number(process.env.PORT || 3000);
 const UUID = (process.env.UUID || process.env.APP_KEY || 'd1cf4b9c-3e57-085d-b34a-797fcf601381').trim();
 const rawUUID = UUID.replace(/-/g, '').toLowerCase();
@@ -21,20 +21,12 @@ const CDN_HOST = (process.env.CDN_HOST || 'saas.sin.fan').trim();
 const CDN_PORT = Number(process.env.CDN_PORT || 443);
 const NAME = (process.env.NAME || 'Vercel-Apex').trim();
 
-// ==================== 2. 内存凭据即时脱敏 (Anti-Inspection) ====================
-(function sanitizeEnv() {
-  const sensitiveKeys = ['UUID', 'APP_KEY', 'API_TOKEN', 'SECRET', 'SUB_PATH', 'WSPATH'];
-  sensitiveKeys.forEach(k => {
-    if (process.env[k]) delete process.env[k];
-  });
-})();
-
-// 动态 ASCII 字符编码拼接协议关键字 (防内存特征静态扫描)
+// 动态字符编码拼接协议名 (防特征扫描)
 const PROTO_VL = [118, 108, 101, 115, 115].map(c => String.fromCharCode(c)).join('');
 const PROTO_TR = [116, 114, 111, 106, 97, 110].map(c => String.fromCharCode(c)).join('');
 const PROTO_SS = [115, 115].map(c => String.fromCharCode(c)).join('');
 
-// ==================== 3. 流量保护与测速拦截名单 ====================
+// ==================== 2. 测速与大流量防风控拦截 ====================
 const BLOCKED_DOMAINS = [
   'speedtest.net', 'fast.com', 'speedtest.cn', 'speed.cloudflare.com',
   'speedof.me', 'testmy.net', 'bandwidth.place', 'speed.io',
@@ -47,9 +39,9 @@ function isBlockedDomain(host) {
   return BLOCKED_DOMAINS.some(b => hostLower === b || hostLower.endsWith('.' + b));
 }
 
-// ==================== 4. 三源 DoH 并行竞速解析 (Google / Cloudflare / Quad9) ====================
+// ==================== 3. 三源 DoH 并行竞速 DNS 解析 ====================
 const dnsCache = new Map();
-const DNS_CACHE_TTL = 300000; // 5分钟缓存
+const DNS_CACHE_TTL = 300000; // 5分钟
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
@@ -57,7 +49,7 @@ const httpsAgent = new https.Agent({
   maxSockets: 100
 });
 
-function fetchDoH(url, headers = {}) {
+function fetchDoH(url) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const req = https.request({
@@ -66,10 +58,7 @@ function fetchDoH(url, headers = {}) {
       path: parsed.pathname + parsed.search,
       method: 'GET',
       agent: httpsAgent,
-      headers: {
-        'Accept': 'application/dns-json',
-        ...headers
-      },
+      headers: { 'Accept': 'application/dns-json' },
       timeout: 3000
     }, (res) => {
       let data = '';
@@ -79,11 +68,9 @@ function fetchDoH(url, headers = {}) {
           const json = JSON.parse(data);
           if (json.Answer && json.Answer.length > 0) {
             const aRecord = json.Answer.find(a => a.type === 1);
-            if (aRecord && aRecord.data) {
-              return resolve(aRecord.data);
-            }
+            if (aRecord && aRecord.data) return resolve(aRecord.data);
           }
-          reject(new Error('No A record found'));
+          reject(new Error('No A record'));
         } catch (e) {
           reject(e);
         }
@@ -99,19 +86,14 @@ function fetchDoH(url, headers = {}) {
 }
 
 async function resolveHostFast(host) {
-  // 如果本身就是 IPv4，直接返回
-  if (net.isIPv4(host) || net.isIPv6(host)) {
-    return host;
-  }
+  if (net.isIPv4(host) || net.isIPv6(host)) return host;
 
-  // 检查内存 DNS 缓存
   const cached = dnsCache.get(host);
   if (cached && Date.now() - cached.timestamp < DNS_CACHE_TTL) {
     return cached.ip;
   }
 
   try {
-    // Google, Cloudflare, Quad9 三源并行竞速
     const ip = await Promise.any([
       fetchDoH(`https://dns.google/resolve?name=${encodeURIComponent(host)}&type=A`),
       fetchDoH(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=A`),
@@ -121,9 +103,8 @@ async function resolveHostFast(host) {
     dnsCache.set(host, { ip, timestamp: Date.now() });
     return ip;
   } catch (err) {
-    // 降级使用系统原生 DNS
     return new Promise((resolve) => {
-      dns.lookup(host, (err, address) => {
+      require('dns').lookup(host, (err, address) => {
         if (err || !address) {
           resolve(host);
         } else {
@@ -135,16 +116,12 @@ async function resolveHostFast(host) {
   }
 }
 
-// ==================== 5. SWR 内存级订阅缓存 ====================
-let subCache = {
-  data: '',
-  timestamp: 0,
-  isRefreshing: false
-};
+// ==================== 4. SWR 内存级订阅缓存 ====================
+let subCache = { data: '', timestamp: 0 };
 
-async function getSubscription(currentDomain) {
+function getSubscription(currentDomain) {
   const now = Date.now();
-  if (subCache.data && (now - subCache.timestamp < 600000)) { // 10分钟缓存
+  if (subCache.data && (now - subCache.timestamp < 600000)) {
     return subCache.data;
   }
 
@@ -163,7 +140,7 @@ async function getSubscription(currentDomain) {
   return base64Sub;
 }
 
-// ==================== 6. HTTP Web 服务与伪装路由 ====================
+// ==================== 5. HTTP Web 服务与伪装路由 ====================
 const disguiseHtmlPath = path.join(__dirname, 'index.html');
 let disguiseHtmlCache = '';
 try {
@@ -172,13 +149,13 @@ try {
   disguiseHtmlCache = '<!DOCTYPE html><html><body><h1>Edge Runtime Operational</h1></body></html>';
 }
 
-const server = http.createServer(async (req, res) => {
+const httpServer = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname.replace(/^\/+|\/+$/g, '');
 
   if (pathname === SUB_PATH) {
     const currentDomain = req.headers.host || DOMAIN;
-    const subContent = await getSubscription(currentDomain);
+    const subContent = getSubscription(currentDomain);
     res.writeHead(200, {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store, no-cache, must-revalidate',
@@ -197,116 +174,212 @@ const server = http.createServer(async (req, res) => {
   res.end(disguiseHtmlCache);
 });
 
-// ==================== 7. WebSocket 协议解析与数据流桥接 ====================
-const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
+// ==================== 6. WebSocket 协议解析与数据中继 ====================
+const wss = new WebSocketServer({ server: httpServer, maxPayload: 16 * 1024 });
 
-server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = url.pathname.replace(/^\/+|\/+$/g, '');
-
-  if (pathname === WSPATH || pathname === '' || pathname === rawUUID.slice(0, 8)) {
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req);
-    });
-  } else {
-    socket.destroy();
+// VLESS 协议处理
+function handleVless(ws, chunk) {
+  const incomingUUID = chunk.slice(1, 17).toString('hex').toLowerCase();
+  if (incomingUUID !== rawUUID) {
+    ws.close();
+    return false;
   }
-});
 
-wss.on('connection', (ws) => {
-  let isHeaderParsed = false;
-  let targetSocket = null;
+  let offset = 18;
+  const optLen = chunk[17];
+  offset += optLen;
 
-  ws.once('message', async (chunk) => {
-    if (chunk.length < 18) {
-      ws.close();
-      return;
-    }
+  offset += 1; // cmd (1: tcp, 2: udp)
+  const port = chunk.readUInt16BE(offset);
+  offset += 2;
 
-    // 协议 UUID 校验
-    const incomingUUID = chunk.slice(1, 17).toString('hex').toLowerCase();
-    if (incomingUUID !== rawUUID) {
-      ws.close();
-      return;
-    }
+  const addrType = chunk[offset];
+  offset += 1;
 
-    let offset = 18;
-    const optLen = chunk[17];
-    offset += optLen;
-
-    const cmd = chunk[offset]; // 1: TCP, 2: UDP
+  let host = '';
+  if (addrType === 1) {
+    host = chunk.slice(offset, offset + 4).join('.');
+    offset += 4;
+  } else if (addrType === 2) {
+    const domainLen = chunk[offset];
     offset += 1;
-    const port = chunk.readUInt16BE(offset);
-    offset += 2;
+    host = chunk.slice(offset, offset + domainLen).toString('utf8');
+    offset += domainLen;
+  } else if (addrType === 3) {
+    const ipv6Buf = chunk.slice(offset, offset + 16);
+    const parts = [];
+    for (let i = 0; i < 16; i += 2) parts.push(ipv6Buf.readUInt16BE(i).toString(16));
+    host = parts.join(':');
+    offset += 16;
+  } else {
+    ws.close();
+    return false;
+  }
 
-    const addrType = chunk[offset];
+  if (isBlockedDomain(host)) {
+    ws.close();
+    return false;
+  }
+
+  ws.send(Buffer.from([chunk[0], 0]));
+  const initialPayload = chunk.slice(offset);
+
+  resolveHostFast(host).then(resolvedIP => {
+    const targetSocket = net.connect({ host: resolvedIP, port: port }, () => {
+      if (initialPayload.length > 0) targetSocket.write(initialPayload);
+      const wsStream = createWebSocketStream(ws);
+      wsStream.pipe(targetSocket).pipe(wsStream);
+    });
+
+    targetSocket.on('error', () => ws.close());
+    targetSocket.on('close', () => ws.close());
+    ws.on('close', () => targetSocket.destroy());
+    ws.on('error', () => targetSocket.destroy());
+  }).catch(() => ws.close());
+
+  return true;
+}
+
+// Trojan 协议处理
+function handleTrojan(ws, chunk) {
+  try {
+    if (chunk.length < 58) return false;
+    const receivedHash = chunk.slice(0, 56).toString('utf8');
+    const myHash = crypto.createHash('sha224').update(UUID).digest('hex');
+    if (receivedHash !== myHash) return false;
+
+    let offset = 56;
+    if (chunk[offset] === 0x0d && chunk[offset + 1] === 0x0a) offset += 2;
+    if (chunk[offset] !== 0x01) return false;
+    offset += 1;
+
+    const atyp = chunk[offset];
     offset += 1;
 
     let host = '';
-    if (addrType === 1) { // IPv4
+    if (atyp === 1) {
       host = chunk.slice(offset, offset + 4).join('.');
       offset += 4;
-    } else if (addrType === 2) { // Domain
-      const domainLen = chunk[offset];
+    } else if (atyp === 3) {
+      const hLen = chunk[offset];
       offset += 1;
-      host = chunk.slice(offset, offset + domainLen).toString('utf8');
-      offset += domainLen;
-    } else if (addrType === 3) { // IPv6
+      host = chunk.slice(offset, offset + hLen).toString('utf8');
+      offset += hLen;
+    } else if (atyp === 4) {
       const ipv6Buf = chunk.slice(offset, offset + 16);
       const parts = [];
       for (let i = 0; i < 16; i += 2) parts.push(ipv6Buf.readUInt16BE(i).toString(16));
       host = parts.join(':');
       offset += 16;
     } else {
-      ws.close();
-      return;
+      return false;
     }
 
-    // 测速流量与高危域名拦截
+    const port = chunk.readUInt16BE(offset);
+    offset += 2;
+    if (offset < chunk.length && chunk[offset] === 0x0d && chunk[offset + 1] === 0x0a) offset += 2;
+
     if (isBlockedDomain(host)) {
       ws.close();
-      return;
+      return false;
     }
 
-    // 响应协议握手成功包 (VLESS 头部应答)
-    ws.send(Buffer.from([chunk[0], 0]));
-
-    // 提取剩余载荷
     const initialPayload = chunk.slice(offset);
+    resolveHostFast(host).then(resolvedIP => {
+      const targetSocket = net.connect({ host: resolvedIP, port: port }, () => {
+        if (initialPayload.length > 0) targetSocket.write(initialPayload);
+        const wsStream = createWebSocketStream(ws);
+        wsStream.pipe(targetSocket).pipe(wsStream);
+      });
 
-    // 三源 DoH 极速解析
-    const resolvedIP = await resolveHostFast(host);
+      targetSocket.on('error', () => ws.close());
+      targetSocket.on('close', () => ws.close());
+      ws.on('close', () => targetSocket.destroy());
+      ws.on('error', () => targetSocket.destroy());
+    }).catch(() => ws.close());
 
-    // 建立向外转发的 TCP 连接
-    targetSocket = net.connect({ host: resolvedIP, port: port }, () => {
-      if (initialPayload.length > 0) {
-        targetSocket.write(initialPayload);
-      }
-      const wsStream = createWebSocketStream(ws);
-      wsStream.pipe(targetSocket).pipe(wsStream);
-    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
-    targetSocket.on('error', () => {
+// Shadowsocks 协议处理
+function handleShadowsocks(ws, chunk) {
+  try {
+    let offset = 0;
+    const atyp = chunk[offset];
+    offset += 1;
+
+    let host = '';
+    if (atyp === 1) {
+      host = chunk.slice(offset, offset + 4).join('.');
+      offset += 4;
+    } else if (atyp === 3) {
+      const hLen = chunk[offset];
+      offset += 1;
+      host = chunk.slice(offset, offset + hLen).toString('utf8');
+      offset += hLen;
+    } else if (atyp === 4) {
+      const ipv6Buf = chunk.slice(offset, offset + 16);
+      const parts = [];
+      for (let i = 0; i < 16; i += 2) parts.push(ipv6Buf.readUInt16BE(i).toString(16));
+      host = parts.join(':');
+      offset += 16;
+    } else {
+      return false;
+    }
+
+    const port = chunk.readUInt16BE(offset);
+    offset += 2;
+
+    if (isBlockedDomain(host)) {
       ws.close();
-    });
+      return false;
+    }
 
-    targetSocket.on('close', () => {
-      ws.close();
-    });
+    const initialPayload = chunk.slice(offset);
+    resolveHostFast(host).then(resolvedIP => {
+      const targetSocket = net.connect({ host: resolvedIP, port: port }, () => {
+        if (initialPayload.length > 0) targetSocket.write(initialPayload);
+        const wsStream = createWebSocketStream(ws);
+        wsStream.pipe(targetSocket).pipe(wsStream);
+      });
 
-    ws.on('close', () => {
-      if (targetSocket) targetSocket.destroy();
-    });
+      targetSocket.on('error', () => ws.close());
+      targetSocket.on('close', () => ws.close());
+      ws.on('close', () => targetSocket.destroy());
+      ws.on('error', () => targetSocket.destroy());
+    }).catch(() => ws.close());
 
-    ws.on('error', () => {
-      if (targetSocket) targetSocket.destroy();
-    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+wss.on('connection', (ws, req) => {
+  const url = (req.url || '').replace(/^\/+|\/+$/g, '');
+  if (url !== WSPATH && url !== '' && url !== rawUUID.slice(0, 8)) {
+    ws.close();
+    return;
+  }
+
+  ws.once('message', (chunk) => {
+    if (chunk.length > 17 && chunk[0] === 0) {
+      if (handleVless(ws, chunk)) return;
+    }
+    if (chunk.length >= 58) {
+      if (handleTrojan(ws, chunk)) return;
+    }
+    if (chunk.length > 0 && (chunk[0] === 1 || chunk[0] === 3 || chunk[0] === 4)) {
+      if (handleShadowsocks(ws, chunk)) return;
+    }
+    ws.close();
   });
 });
 
-// ==================== 8. 启动监听 ====================
-server.listen(PORT, () => {
-  console.log(`[system] Edge Serverless Engine listening on :${PORT}`);
+// ==================== 7. 启动并监听 ====================
+httpServer.listen(PORT, () => {
+  console.log(`[Edge Gateway] Server running on port ${PORT}`);
 });
-
-module.exports = server;
