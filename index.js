@@ -17,9 +17,9 @@ const rawUUID = UUID.replace(/-/g, '').toLowerCase();
 const DOMAIN = (process.env.DOMAIN || process.env.APP_DOMAIN || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
 const SUB_PATH = (process.env.SUB_PATH || 'sub').trim().replace(/^\/+|\/+$/g, '');
 const WSPATH = (process.env.WSPATH || process.env.PATH_A || 'api/v3/telemetry').trim().replace(/^\/+|\/+$/g, '');
-const CDN_HOST = (process.env.CDN_HOST || 'saas.sin.fan').trim();
+const CDN_HOST = (process.env.CDN_HOST || '').trim();
 const CDN_PORT = Number(process.env.CDN_PORT || 443);
-const NAME = (process.env.NAME || 'Vercel-Apex').trim();
+const NAME = (process.env.NAME || 'Vercel-Apex-Tokyo').trim();
 
 // 动态字符编码拼接协议名 (防特征扫描)
 const PROTO_VL = [118, 108, 101, 115, 115].map(c => String.fromCharCode(c)).join('');
@@ -116,28 +116,19 @@ async function resolveHostFast(host) {
   }
 }
 
-// ==================== 4. SWR 内存级订阅缓存 ====================
-let subCache = { data: '', timestamp: 0 };
+// ==================== 4. 智能自适应订阅生成 ====================
+function generateSubscription(reqHost) {
+  const effectiveHost = DOMAIN || reqHost || 'vercel.chatgptaigode.eu.org';
+  const connectAddress = CDN_HOST || effectiveHost;
 
-function getSubscription(currentDomain) {
-  const now = Date.now();
-  if (subCache.data && (now - subCache.timestamp < 600000)) {
-    return subCache.data;
-  }
-
-  const effectiveDomain = currentDomain || DOMAIN || 'your-project.vercel.app';
-  const vlsURL = `${PROTO_VL}://${UUID}@${effectiveDomain}:${CDN_PORT}?encryption=none&security=tls&sni=${effectiveDomain}&fp=chrome&type=ws&host=${effectiveDomain}&path=%2F${WSPATH}#${NAME}`;
-  const troURL = `${PROTO_TR}://${UUID}@${effectiveDomain}:${CDN_PORT}?security=tls&sni=${effectiveDomain}&fp=chrome&type=ws&host=${effectiveDomain}&path=%2F${WSPATH}#${NAME}`;
+  const vlsURL = `${PROTO_VL}://${UUID}@${connectAddress}:${CDN_PORT}?encryption=none&security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${NAME}-Vls`;
+  const troURL = `${PROTO_TR}://${UUID}@${connectAddress}:${CDN_PORT}?security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${NAME}-Trojan`;
   
   const ssPassword = Buffer.from(`none:${UUID}`).toString('base64');
-  const ssURL = `${PROTO_SS}://${ssPassword}@${effectiveDomain}:${CDN_PORT}?plugin=v2ray-plugin;mode%3Dwebsocket;host%3D${effectiveDomain};path%3D%2F${WSPATH};tls;sni%3D${effectiveDomain};skip-cert-verify%3Dtrue;mux%3D0#${NAME}`;
+  const ssURL = `${PROTO_SS}://${ssPassword}@${connectAddress}:${CDN_PORT}?plugin=v2ray-plugin;mode%3Dwebsocket;host%3D${effectiveHost};path%3D%2F${WSPATH};tls;sni%3D${effectiveHost};skip-cert-verify%3Dtrue;mux%3D0#${NAME}-SS`;
 
   const payload = [vlsURL, troURL, ssURL].join('\n');
-  const base64Sub = Buffer.from(payload).toString('base64');
-
-  subCache.data = base64Sub;
-  subCache.timestamp = now;
-  return base64Sub;
+  return Buffer.from(payload).toString('base64');
 }
 
 // ==================== 5. HTTP Web 服务与伪装路由 ====================
@@ -154,8 +145,8 @@ const httpServer = http.createServer(async (req, res) => {
   const pathname = url.pathname.replace(/^\/+|\/+$/g, '');
 
   if (pathname === SUB_PATH) {
-    const currentDomain = req.headers.host || DOMAIN;
-    const subContent = getSubscription(currentDomain);
+    const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    const subContent = generateSubscription(hostHeader);
     res.writeHead(200, {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store, no-cache, must-revalidate',
