@@ -13,7 +13,7 @@ const { WebSocket, WebSocketServer, createWebSocketStream } = require('ws');
 // ==================== 1. 环境变量与全局配置 ====================
 const PORT = Number(process.env.PORT || 3000);
 const UUID = (process.env.UUID || process.env.APP_KEY || 'd1cf4b9c-3e57-085d-b34a-797fcf601381').trim();
-const rawUUID = UUID.replace(/-/g, '').toLowerCase();
+const uuidHex = UUID.replace(/-/g, '').toLowerCase();
 const DOMAIN = (process.env.DOMAIN || process.env.APP_DOMAIN || 'vercel.chatgptaigode.eu.org').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
 const SUB_PATH = (process.env.SUB_PATH || 'sub').trim().replace(/^\/+|\/+$/g, '');
 const WSPATH = (process.env.WSPATH || process.env.PATH_A || 'api/v3/telemetry').trim().replace(/^\/+|\/+$/g, '');
@@ -168,205 +168,143 @@ const httpServer = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ server: httpServer, maxPayload: 16 * 1024 });
 
 // VLESS 协议处理
-function handleVless(ws, chunk) {
-  const incomingUUID = chunk.slice(1, 17).toString('hex').toLowerCase();
-  if (incomingUUID !== rawUUID) {
-    ws.close();
-    return false;
-  }
+function handleVlsConnection(ws, msg) {
+  const [VERSION] = msg;
+  const id = msg.slice(1, 17);
+  if (!id.every((v, i) => v == parseInt(uuidHex.substr(i * 2, 2), 16))) return false;
 
-  let offset = 18;
-  const optLen = chunk[17];
-  offset += optLen;
+  let i = msg.slice(17, 18).readUInt8() + 19;
+  const port = msg.slice(i, i += 2).readUInt16BE(0);
+  const ATYP = msg.slice(i, i += 1).readUInt8();
+  const host = ATYP == 1 ? msg.slice(i, i += 4).join('.') :
+    (ATYP == 2 ? new TextDecoder().decode(msg.slice(i + 1, i += 1 + msg.slice(i, i + 1).readUInt8())) :
+      (ATYP == 3 ? msg.slice(i, i += 16).reduce((s, b, idx, a) => (idx % 2 ? s.concat(a.slice(idx - 1, idx + 1)) : s), []).map(b => b.readUInt16BE(0).toString(16)).join(':') : ''));
 
-  offset += 1; // cmd (1: tcp, 2: udp)
-  const port = chunk.readUInt16BE(offset);
-  offset += 2;
+  if (isBlockedDomain(host)) { ws.close(); return false; }
+  ws.send(new Uint8Array([VERSION, 0]));
+  const duplex = createWebSocketStream(ws);
 
-  const addrType = chunk[offset];
-  offset += 1;
-
-  let host = '';
-  if (addrType === 1) {
-    host = chunk.slice(offset, offset + 4).join('.');
-    offset += 4;
-  } else if (addrType === 2) {
-    const domainLen = chunk[offset];
-    offset += 1;
-    host = chunk.slice(offset, offset + domainLen).toString('utf8');
-    offset += domainLen;
-  } else if (addrType === 3) {
-    const ipv6Buf = chunk.slice(offset, offset + 16);
-    const parts = [];
-    for (let i = 0; i < 16; i += 2) parts.push(ipv6Buf.readUInt16BE(i).toString(16));
-    host = parts.join(':');
-    offset += 16;
-  } else {
-    ws.close();
-    return false;
-  }
-
-  if (isBlockedDomain(host)) {
-    ws.close();
-    return false;
-  }
-
-  ws.send(Buffer.from([chunk[0], 0]));
-  const initialPayload = chunk.slice(offset);
-
-  resolveHostFast(host).then(resolvedIP => {
-    const targetSocket = net.connect({ host: resolvedIP, port: port }, () => {
-      if (initialPayload.length > 0) targetSocket.write(initialPayload);
-      const wsStream = createWebSocketStream(ws);
-      wsStream.pipe(targetSocket).pipe(wsStream);
+  resolveHostFast(host)
+    .then(resolvedIP => {
+      net.connect({ host: resolvedIP, port }, function () {
+        this.write(msg.slice(i));
+        duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
+      }).on('error', () => { ws.close(); });
+    })
+    .catch(() => {
+      net.connect({ host, port }, function () {
+        this.write(msg.slice(i));
+        duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
+      }).on('error', () => { ws.close(); });
     });
-
-    targetSocket.on('error', () => ws.close());
-    targetSocket.on('close', () => ws.close());
-    ws.on('close', () => targetSocket.destroy());
-    ws.on('error', () => targetSocket.destroy());
-  }).catch(() => ws.close());
-
   return true;
 }
 
 // Trojan 协议处理
-function handleTrojan(ws, chunk) {
+function handleTrojConnection(ws, msg) {
   try {
-    if (chunk.length < 58) return false;
-    const receivedHash = chunk.slice(0, 56).toString('utf8');
+    if (msg.length < 58) return false;
+    const receivedPasswordHash = msg.slice(0, 56).toString();
     const myHash = crypto.createHash('sha224').update(UUID).digest('hex');
-    if (receivedHash !== myHash) return false;
+    if (myHash !== receivedPasswordHash) return false;
 
     let offset = 56;
-    if (chunk[offset] === 0x0d && chunk[offset + 1] === 0x0a) offset += 2;
-    if (chunk[offset] !== 0x01) return false;
+    if (msg[offset] === 0x0d && msg[offset + 1] === 0x0a) offset += 2;
+    const cmd = msg[offset];
+    if (cmd !== 0x01) return false;
     offset += 1;
 
-    const atyp = chunk[offset];
+    const atyp = msg[offset];
     offset += 1;
+    let host, port;
+    if (atyp === 0x01) {
+      host = msg.slice(offset, offset + 4).join('.'); offset += 4;
+    } else if (atyp === 0x03) {
+      const hostLen = msg[offset]; offset += 1;
+      host = msg.slice(offset, offset + hostLen).toString(); offset += hostLen;
+    } else if (atyp === 0x04) {
+      host = msg.slice(offset, offset + 16).reduce((s, b, idx, a) => (idx % 2 ? s.concat(a.slice(idx - 1, idx + 1)) : s), []).map(b => b.readUInt16BE(0).toString(16)).join(':'); offset += 16;
+    } else { return false; }
 
-    let host = '';
-    if (atyp === 1) {
-      host = chunk.slice(offset, offset + 4).join('.');
-      offset += 4;
-    } else if (atyp === 3) {
-      const hLen = chunk[offset];
-      offset += 1;
-      host = chunk.slice(offset, offset + hLen).toString('utf8');
-      offset += hLen;
-    } else if (atyp === 4) {
-      const ipv6Buf = chunk.slice(offset, offset + 16);
-      const parts = [];
-      for (let i = 0; i < 16; i += 2) parts.push(ipv6Buf.readUInt16BE(i).toString(16));
-      host = parts.join(':');
-      offset += 16;
-    } else {
-      return false;
-    }
+    port = msg.readUInt16BE(offset); offset += 2;
+    if (offset < msg.length && msg[offset] === 0x0d && msg[offset + 1] === 0x0a) offset += 2;
+    if (isBlockedDomain(host)) { ws.close(); return false; }
 
-    const port = chunk.readUInt16BE(offset);
-    offset += 2;
-    if (offset < chunk.length && chunk[offset] === 0x0d && chunk[offset + 1] === 0x0a) offset += 2;
-
-    if (isBlockedDomain(host)) {
-      ws.close();
-      return false;
-    }
-
-    const initialPayload = chunk.slice(offset);
-    resolveHostFast(host).then(resolvedIP => {
-      const targetSocket = net.connect({ host: resolvedIP, port: port }, () => {
-        if (initialPayload.length > 0) targetSocket.write(initialPayload);
-        const wsStream = createWebSocketStream(ws);
-        wsStream.pipe(targetSocket).pipe(wsStream);
+    const duplex = createWebSocketStream(ws);
+    resolveHostFast(host)
+      .then(resolvedIP => {
+        net.connect({ host: resolvedIP, port }, function () {
+          if (offset < msg.length) this.write(msg.slice(offset));
+          duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
+        }).on('error', () => { ws.close(); });
+      })
+      .catch(() => {
+        net.connect({ host, port }, function () {
+          if (offset < msg.length) this.write(msg.slice(offset));
+          duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
+        }).on('error', () => { ws.close(); });
       });
-
-      targetSocket.on('error', () => ws.close());
-      targetSocket.on('close', () => ws.close());
-      ws.on('close', () => targetSocket.destroy());
-      ws.on('error', () => targetSocket.destroy());
-    }).catch(() => ws.close());
-
     return true;
-  } catch (e) {
-    return false;
-  }
+  } catch (error) { return false; }
 }
 
 // Shadowsocks 协议处理
-function handleShadowsocks(ws, chunk) {
+function handleSsConnection(ws, msg) {
   try {
     let offset = 0;
-    const atyp = chunk[offset];
-    offset += 1;
+    const atyp = msg[offset]; offset += 1;
+    let host, port;
+    if (atyp === 0x01) {
+      host = msg.slice(offset, offset + 4).join('.'); offset += 4;
+    } else if (atyp === 0x03) {
+      const hostLen = msg[offset]; offset += 1;
+      host = msg.slice(offset, offset + hostLen).toString(); offset += hostLen;
+    } else if (atyp === 0x04) {
+      host = msg.slice(offset, offset + 16).reduce((s, b, idx, a) => (idx % 2 ? s.concat(a.slice(idx - 1, idx + 1)) : s), []).map(b => b.readUInt16BE(0).toString(16)).join(':'); offset += 16;
+    } else { return false; }
 
-    let host = '';
-    if (atyp === 1) {
-      host = chunk.slice(offset, offset + 4).join('.');
-      offset += 4;
-    } else if (atyp === 3) {
-      const hLen = chunk[offset];
-      offset += 1;
-      host = chunk.slice(offset, offset + hLen).toString('utf8');
-      offset += hLen;
-    } else if (atyp === 4) {
-      const ipv6Buf = chunk.slice(offset, offset + 16);
-      const parts = [];
-      for (let i = 0; i < 16; i += 2) parts.push(ipv6Buf.readUInt16BE(i).toString(16));
-      host = parts.join(':');
-      offset += 16;
-    } else {
-      return false;
-    }
+    port = msg.readUInt16BE(offset); offset += 2;
+    if (isBlockedDomain(host)) { ws.close(); return false; }
 
-    const port = chunk.readUInt16BE(offset);
-    offset += 2;
-
-    if (isBlockedDomain(host)) {
-      ws.close();
-      return false;
-    }
-
-    const initialPayload = chunk.slice(offset);
-    resolveHostFast(host).then(resolvedIP => {
-      const targetSocket = net.connect({ host: resolvedIP, port: port }, () => {
-        if (initialPayload.length > 0) targetSocket.write(initialPayload);
-        const wsStream = createWebSocketStream(ws);
-        wsStream.pipe(targetSocket).pipe(wsStream);
+    const duplex = createWebSocketStream(ws);
+    resolveHostFast(host)
+      .then(resolvedIP => {
+        net.connect({ host: resolvedIP, port }, function () {
+          if (offset < msg.length) this.write(msg.slice(offset));
+          duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
+        }).on('error', () => { ws.close(); });
+      })
+      .catch(() => {
+        net.connect({ host, port }, function () {
+          if (offset < msg.length) this.write(msg.slice(offset));
+          duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
+        }).on('error', () => { ws.close(); });
       });
-
-      targetSocket.on('error', () => ws.close());
-      targetSocket.on('close', () => ws.close());
-      ws.on('close', () => targetSocket.destroy());
-      ws.on('error', () => targetSocket.destroy());
-    }).catch(() => ws.close());
-
     return true;
-  } catch (e) {
-    return false;
-  }
+  } catch (error) { return false; }
 }
 
+// WebSocket 连接分发
 wss.on('connection', (ws, req) => {
-  const url = (req.url || '').replace(/^\/+|\/+$/g, '');
-  if (url !== WSPATH && url !== '' && url !== rawUUID.slice(0, 8)) {
+  const url = req.url || '';
+  const expectedPath = `/${WSPATH}`;
+  if (!url.startsWith(expectedPath) && url !== '/' && !url.startsWith('/' + uuidHex.slice(0, 8))) {
     ws.close();
     return;
   }
 
-  ws.once('message', (chunk) => {
-    if (chunk.length > 17 && chunk[0] === 0) {
-      if (handleVless(ws, chunk)) return;
+  ws.once('message', msg => {
+    if (msg.length > 17 && msg[0] === 0) {
+      const id = msg.slice(1, 17);
+      const isVless = id.every((v, i) => v == parseInt(uuidHex.substr(i * 2, 2), 16));
+      if (isVless) { if (!handleVlsConnection(ws, msg)) ws.close(); return; }
     }
-    if (chunk.length >= 58) {
-      if (handleTrojan(ws, chunk)) return;
-    }
-    if (chunk.length > 0 && (chunk[0] === 1 || chunk[0] === 3 || chunk[0] === 4)) {
-      if (handleShadowsocks(ws, chunk)) return;
+    if (msg.length >= 58) { if (handleTrojConnection(ws, msg)) return; }
+    if (msg.length > 0 && (msg[0] === 0x01 || msg[0] === 0x03 || msg[0] === 0x04)) {
+      if (handleSsConnection(ws, msg)) return;
     }
     ws.close();
-  });
+  }).on('error', () => { });
 });
 
 // ==================== 7. 启动并监听 ====================
