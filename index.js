@@ -14,12 +14,12 @@ const { WebSocket, WebSocketServer, createWebSocketStream } = require('ws');
 const PORT = Number(process.env.PORT || 3000);
 const UUID = (process.env.UUID || process.env.APP_KEY || 'd1cf4b9c-3e57-085d-b34a-797fcf601381').trim();
 const rawUUID = UUID.replace(/-/g, '').toLowerCase();
-const DOMAIN = (process.env.DOMAIN || process.env.APP_DOMAIN || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+const DOMAIN = (process.env.DOMAIN || process.env.APP_DOMAIN || 'vercel.chatgptaigode.eu.org').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
 const SUB_PATH = (process.env.SUB_PATH || 'sub').trim().replace(/^\/+|\/+$/g, '');
 const WSPATH = (process.env.WSPATH || process.env.PATH_A || 'api/v3/telemetry').trim().replace(/^\/+|\/+$/g, '');
-const CDN_HOST = (process.env.CDN_HOST || '').trim();
+const CDN_HOST = (process.env.CDN_HOST || 'saas.sin.fan').trim();
 const CDN_PORT = Number(process.env.CDN_PORT || 443);
-const NAME = (process.env.NAME || 'Vercel-Apex-Tokyo').trim();
+const NAME = (process.env.NAME || 'Tokyo-HND1-Vercel').trim();
 
 // 动态字符编码拼接协议名 (防特征扫描)
 const PROTO_VL = [118, 108, 101, 115, 115].map(c => String.fromCharCode(c)).join('');
@@ -116,10 +116,10 @@ async function resolveHostFast(host) {
   }
 }
 
-// ==================== 4. 智能自适应订阅生成 ====================
-function generateSubscription(reqHost) {
-  const effectiveHost = DOMAIN || reqHost || 'vercel.chatgptaigode.eu.org';
-  const connectAddress = CDN_HOST || effectiveHost;
+// ==================== 4. 优选域名自适应订阅生成 ====================
+function generateSubscription() {
+  const effectiveHost = DOMAIN || 'vercel.chatgptaigode.eu.org';
+  const connectAddress = CDN_HOST || 'saas.sin.fan';
 
   const vlsURL = `${PROTO_VL}://${UUID}@${connectAddress}:${CDN_PORT}?encryption=none&security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${NAME}-Vls`;
   const troURL = `${PROTO_TR}://${UUID}@${connectAddress}:${CDN_PORT}?security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${NAME}-Trojan`;
@@ -145,8 +145,7 @@ const httpServer = http.createServer(async (req, res) => {
   const pathname = url.pathname.replace(/^\/+|\/+$/g, '');
 
   if (pathname === SUB_PATH) {
-    const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
-    const subContent = generateSubscription(hostHeader);
+    const subContent = generateSubscription();
     res.writeHead(200, {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store, no-cache, must-revalidate',
