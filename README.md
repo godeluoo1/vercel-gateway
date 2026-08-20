@@ -34,19 +34,31 @@
 
 修改 `vercel.json` 中的 `"regions": ["机房代码"]` 即可自由切换机房（推荐根据所在地理位置选择）：
 
-| 地区代码 | 城市 / 区域 | 国家 / 地区 | 推荐使用场景与实测表现 |
-| :--- | :--- | :--- | :--- |
-| **`hnd1`** *(默认推荐)* | **东京 (Tokyo)** | **日本** | **🔥 全场总冠军！华南实测 111ms~124ms，综合体验最佳** |
-| **`hkg1`** | **香港 (Hong Kong)** | **中国香港** | 距离广州极近，实测 133ms~160ms |
-| **`kix1`** | **大阪 (Osaka)** | **日本** | 关西直达海缆，实测 137ms~147ms |
-| **`icn1`** | **首尔 (Seoul)** | **韩国** | 东北亚高速光纤，实测 153ms~173ms |
-| **`sin1`** | **新加坡 (Singapore)** | **新加坡** | 东南亚大带宽，实测 176ms~180ms |
-| **`sfo1`** | **旧金山 (San Francisco)** | **美国** | 原生美区 IP，解锁 ChatGPT 与流媒体顶级 |
-| **`iad1`** | 华盛顿 (Washington D.C.) | 美国 | 美东大型枢纽 |
-| **`fra1`** | 法兰克福 (Frankfurt) | 德国 | 欧洲大陆中心 |
-| **`lhr1`** | 伦敦 (London) | 英国 | 欧洲西部枢纽 |
-| **`syd1`** | 悉尼 (Sydney) | 澳大利亚 | 大洋洲核心 |
-
+地区代码	城市/区域	国家/地区	中文说明
+hnd1	Tokyo	Japan	日本东京
+kix1	Osaka	Japan	日本大阪
+icn1	Seoul	South Korea	韩国首尔
+hkg1	Hong Kong	Hong Kong	中国香港
+sin1	Singapore	Singapore	新加坡
+syd1	Sydney	Australia	澳大利亚悉尼
+bom1	Mumbai	India	印度孟买
+del1	New Delhi	India	印度新德里
+fra1	Frankfurt	Germany	德国法兰克福
+lhr1	London	United Kingdom	英国伦敦
+cdg1	Paris	France	法国巴黎
+ams1	Amsterdam	Netherlands	荷兰阿姆斯特丹
+mad1	Madrid	Spain	西班牙马德里
+dub1	Dublin	Ireland	爱尔兰都柏林
+dxb1	Dubai	United Arab Emirates	阿联酋迪拜
+jnb1	Johannesburg	South Africa	南非约翰内斯堡
+cpt1	Cape Town	South Africa	南非开普敦
+gru1	São Paulo	Brazil	巴西圣保罗
+sfo1	San Francisco	United States	美国旧金山
+iad1	Washington, D.C.	United States	美国华盛顿特区
+pdx1	Portland	United States	美国波特兰
+mia1	Miami	United States	美国迈阿密
+ewr1	Newark	United States	美国纽瓦克
+yul1	Montréal	Canada	加拿大蒙特利尔
 ---
 
 ## 🛠️ Cloudflare Workers 边缘反代脚本（可选集成）
