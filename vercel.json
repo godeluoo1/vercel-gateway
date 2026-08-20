@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "regions": ["icn1"],
+  "regions": ["sfo1"],
   "builds": [
     {
       "src": "index.js",
