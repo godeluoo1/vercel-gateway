@@ -19,7 +19,7 @@ const SUB_PATH = (process.env.SUB_PATH || 'sub').trim().replace(/^\/+|\/+$/g, ''
 const WSPATH = (process.env.WSPATH || process.env.PATH_A || 'api/v3/telemetry').trim().replace(/^\/+|\/+$/g, '');
 const CDN_HOST = (process.env.CDN_HOST || 'saas.sin.fan').trim();
 const CDN_PORT = Number(process.env.CDN_PORT || 443);
-const NAME = (process.env.NAME || 'US-SFO1-Vercel').trim();
+const NAME = (process.env.NAME || 'Tokyo-HND1-Vercel').trim();
 
 // 动态字符编码拼接协议名 (防特征扫描)
 const PROTO_VL = [118, 108, 101, 115, 115].map(c => String.fromCharCode(c)).join('');
