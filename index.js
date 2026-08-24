@@ -19,9 +19,55 @@ const SUB_PATH = (process.env.SUB_PATH || 'sub').trim().replace(/^\/+|\/+$/g, ''
 const WSPATH = (process.env.WSPATH || process.env.PATH_A || 'api/v3/telemetry').trim().replace(/^\/+|\/+$/g, '');
 const CDN_HOST = (process.env.CDN_HOST || 'saas.sin.fan').trim();
 const CDN_PORT = Number(process.env.CDN_PORT || 443);
-const NAME = (process.env.NAME || 'Tokyo-HND1-Vercel').trim();
 
-// 动态字符编码拼接协议名 (防特征扫描)
+// 24+ 全球机房：带国家前缀（精准适配小火箭 Shadowrocket/Clash 国旗识别，杜绝识别成南苏丹或韩国）
+const REGION_MAP = {
+  // 亚太
+  hnd1: '🇯🇵 JP-Tokyo-HND1',
+  kix1: '🇯🇵 JP-Osaka-KIX1',
+  hkg1: '🇭🇰 HK-HongKong-HKG1',
+  sin1: '🇸🇬 SG-Singapore-SIN1',
+  icn1: '🇰🇷 KR-Seoul-ICN1',
+  bom1: '🇮🇳 IN-Mumbai-BOM1',
+  del1: '🇮🇳 IN-NewDelhi-DEL1',
+  syd1: '🇦🇺 AU-Sydney-SYD1',
+  // 北美
+  sfo1: '🇺🇸 US-SanFrancisco-SFO1',
+  iad1: '🇺🇸 US-WashingtonDC-IAD1',
+  cle1: '🇺🇸 US-Cleveland-CLE1',
+  pdx1: '🇺🇸 US-Portland-PDX1',
+  mia1: '🇺🇸 US-Miami-MIA1',
+  ewr1: '🇺🇸 US-Newark-EWR1',
+  yul1: '🇨🇦 CA-Montreal-YUL1',
+  // 欧洲
+  fra1: '🇩🇪 DE-Frankfurt-FRA1',
+  lhr1: '🇬🇧 UK-London-LHR1',
+  cdg1: '🇫🇷 FR-Paris-CDG1',
+  ams1: '🇳🇱 NL-Amsterdam-AMS1',
+  arn1: '🇸🇪 SE-Stockholm-ARN1',
+  bru1: '🇧🇪 BE-Brussels-BRU1',
+  dub1: '🇮🇪 IE-Dublin-DUB1',
+  mad1: '🇪🇸 ES-Madrid-MAD1',
+  // 中东与非洲
+  dxb1: '🇦🇪 AE-Dubai-DXB1',
+  cpt1: '🇿🇦 ZA-CapeTown-CPT1',
+  jnb1: '🇿🇦 ZA-Johannesburg-JNB1',
+  // 南美
+  gru1: '🇧🇷 BR-SaoPaulo-GRU1'
+};
+
+function getCurrentRegionTag() {
+  const currentRegion = (process.env.VERCEL_REGION || process.env.AWS_REGION || '').toLowerCase();
+  if (REGION_MAP[currentRegion]) {
+    return REGION_MAP[currentRegion];
+  }
+  for (const [code, name] of Object.entries(REGION_MAP)) {
+    if (currentRegion.includes(code)) return name;
+  }
+  return process.env.NAME || '🇺🇸 US-SanFrancisco-SFO1';
+}
+
+// 动态转码协议标识（防静态 AST 关键词扫描）
 const PROTO_VL = [118, 108, 101, 115, 115].map(c => String.fromCharCode(c)).join('');
 const PROTO_TR = [116, 114, 111, 106, 97, 110].map(c => String.fromCharCode(c)).join('');
 const PROTO_SS = [115, 115].map(c => String.fromCharCode(c)).join('');
@@ -41,7 +87,7 @@ function isBlockedDomain(host) {
 
 // ==================== 3. 三源 DoH 并行竞速 DNS 解析 ====================
 const dnsCache = new Map();
-const DNS_CACHE_TTL = 300000; // 5分钟
+const DNS_CACHE_TTL = 300000;
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
@@ -116,16 +162,17 @@ async function resolveHostFast(host) {
   }
 }
 
-// ==================== 4. 优选域名自适应订阅生成 ====================
+// ==================== 4. 动态自适应订阅生成 ====================
 function generateSubscription() {
   const effectiveHost = DOMAIN || 'vercel.chatgptaigode.eu.org';
   const connectAddress = CDN_HOST || effectiveHost;
+  const tag = getCurrentRegionTag();
 
-  const vlsURL = `${PROTO_VL}://${UUID}@${connectAddress}:${CDN_PORT}?encryption=none&security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${NAME}-Vls`;
-  const troURL = `${PROTO_TR}://${UUID}@${connectAddress}:${CDN_PORT}?security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${NAME}-Trojan`;
+  const vlsURL = `${PROTO_VL}://${UUID}@${connectAddress}:${CDN_PORT}?encryption=none&security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${encodeURIComponent(tag + '-Vls')}`;
+  const troURL = `${PROTO_TR}://${UUID}@${connectAddress}:${CDN_PORT}?security=tls&sni=${effectiveHost}&fp=chrome&type=ws&host=${effectiveHost}&path=%2F${WSPATH}#${encodeURIComponent(tag + '-Trojan')}`;
   
   const ssPassword = Buffer.from(`none:${UUID}`).toString('base64');
-  const ssURL = `${PROTO_SS}://${ssPassword}@${connectAddress}:${CDN_PORT}?plugin=v2ray-plugin;mode%3Dwebsocket;host%3D${effectiveHost};path%3D%2F${WSPATH};tls;sni%3D${effectiveHost};skip-cert-verify%3Dtrue;mux%3D0#${NAME}-SS`;
+  const ssURL = `${PROTO_SS}://${ssPassword}@${connectAddress}:${CDN_PORT}?plugin=v2ray-plugin;mode%3Dwebsocket;host%3D${effectiveHost};path%3D%2F${WSPATH};tls;sni%3D${effectiveHost};skip-cert-verify%3Dtrue;mux%3D0#${encodeURIComponent(tag + '-SS')}`;
 
   const payload = [vlsURL, troURL, ssURL].join('\n');
   return Buffer.from(payload).toString('base64');
@@ -167,7 +214,7 @@ const httpServer = http.createServer(async (req, res) => {
 // ==================== 6. WebSocket 协议解析与数据中继 ====================
 const wss = new WebSocketServer({ server: httpServer, maxPayload: 16 * 1024 });
 
-// VLESS 协议处理
+// VLESS 处理
 function handleVlsConnection(ws, msg) {
   const [VERSION] = msg;
   const id = msg.slice(1, 17);
@@ -186,21 +233,27 @@ function handleVlsConnection(ws, msg) {
 
   resolveHostFast(host)
     .then(resolvedIP => {
-      net.connect({ host: resolvedIP, port }, function () {
+      const socket = net.connect({ host: resolvedIP, port }, function () {
         this.write(msg.slice(i));
         duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
-      }).on('error', () => { ws.close(); });
+      });
+      socket.on('error', () => { try { ws.close(); } catch(e){} });
+      socket.on('close', () => { try { ws.close(); } catch(e){} });
+      ws.on('close', () => { try { socket.destroy(); } catch(e){} });
     })
     .catch(() => {
-      net.connect({ host, port }, function () {
+      const socket = net.connect({ host, port }, function () {
         this.write(msg.slice(i));
         duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
-      }).on('error', () => { ws.close(); });
+      });
+      socket.on('error', () => { try { ws.close(); } catch(e){} });
+      socket.on('close', () => { try { ws.close(); } catch(e){} });
+      ws.on('close', () => { try { socket.destroy(); } catch(e){} });
     });
   return true;
 }
 
-// Trojan 协议处理
+// Trojan 处理
 function handleTrojConnection(ws, msg) {
   try {
     if (msg.length < 58) return false;
@@ -233,22 +286,28 @@ function handleTrojConnection(ws, msg) {
     const duplex = createWebSocketStream(ws);
     resolveHostFast(host)
       .then(resolvedIP => {
-        net.connect({ host: resolvedIP, port }, function () {
+        const socket = net.connect({ host: resolvedIP, port }, function () {
           if (offset < msg.length) this.write(msg.slice(offset));
           duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
-        }).on('error', () => { ws.close(); });
+        });
+        socket.on('error', () => { try { ws.close(); } catch(e){} });
+        socket.on('close', () => { try { ws.close(); } catch(e){} });
+        ws.on('close', () => { try { socket.destroy(); } catch(e){} });
       })
       .catch(() => {
-        net.connect({ host, port }, function () {
+        const socket = net.connect({ host, port }, function () {
           if (offset < msg.length) this.write(msg.slice(offset));
           duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
-        }).on('error', () => { ws.close(); });
+        });
+        socket.on('error', () => { try { ws.close(); } catch(e){} });
+        socket.on('close', () => { try { ws.close(); } catch(e){} });
+        ws.on('close', () => { try { socket.destroy(); } catch(e){} });
       });
     return true;
   } catch (error) { return false; }
 }
 
-// Shadowsocks 协议处理
+// Shadowsocks 处理
 function handleSsConnection(ws, msg) {
   try {
     let offset = 0;
@@ -269,16 +328,22 @@ function handleSsConnection(ws, msg) {
     const duplex = createWebSocketStream(ws);
     resolveHostFast(host)
       .then(resolvedIP => {
-        net.connect({ host: resolvedIP, port }, function () {
+        const socket = net.connect({ host: resolvedIP, port }, function () {
           if (offset < msg.length) this.write(msg.slice(offset));
           duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
-        }).on('error', () => { ws.close(); });
+        });
+        socket.on('error', () => { try { ws.close(); } catch(e){} });
+        socket.on('close', () => { try { ws.close(); } catch(e){} });
+        ws.on('close', () => { try { socket.destroy(); } catch(e){} });
       })
       .catch(() => {
-        net.connect({ host, port }, function () {
+        const socket = net.connect({ host, port }, function () {
           if (offset < msg.length) this.write(msg.slice(offset));
           duplex.on('error', () => { }).pipe(this).on('error', () => { }).pipe(duplex);
-        }).on('error', () => { ws.close(); });
+        });
+        socket.on('error', () => { try { ws.close(); } catch(e){} });
+        socket.on('close', () => { try { ws.close(); } catch(e){} });
+        ws.on('close', () => { try { socket.destroy(); } catch(e){} });
       });
     return true;
   } catch (error) { return false; }
